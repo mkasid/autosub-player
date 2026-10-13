@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AutoSubPlayer" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0b0f19</item>
+        <item name="android:textColorPrimary">#e6ebf4</item>
+        <item name="android:colorPrimary">#1a73e8</item>
+        <item name="android:colorAccent">#1a73e8</item>
+    </style>
+
+    <style name="Theme.AutoSubPlayer.Player" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
