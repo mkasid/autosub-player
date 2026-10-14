@@ -27,6 +27,31 @@ class SubtitleFetcher(private val context: Context) {
         private const val UA = "AutoSubPlayer/1.0"
         private const val STREAM_UA = "ExoPlayerLib/2.19.1"
         private const val PREFS = "autosub"
+
+        /**
+         * Series-level key: strips episode markers so "Show S01E01" and
+         * "Show S01E02" share one remembered subtitle uploader.
+         */
+        fun seriesKeyFor(title: String): String {
+            val cleaned = TitleCleaner.clean(title).query
+            var s = cleaned
+                .replace(Regex("""(?i)\bS\d{1,2}E\d{1,3}\b"""), " ")
+                .replace(Regex("""(?i)\b\d{1,2}X\d{1,3}\b"""), " ")
+                .replace(Regex("""(?i)\bEP?\d{1,3}\b"""), " ")
+                .replace(Regex("""(?i)\bEpisode\s*\d{1,3}\b"""), " ")
+            s = s.replace(Regex("""\s+"""), " ").trim()
+            return s.lowercase().ifBlank { cleaned.lowercase() }
+        }
+
+        fun rememberedUploader(context: Context, seriesKey: String): String? =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString("subuploader_$seriesKey", null)
+
+        fun rememberUploader(context: Context, seriesKey: String, uploader: String) {
+            if (uploader.isBlank()) return
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString("subuploader_$seriesKey", uploader).apply()
+        }
     }
 
     data class Settings(val apiKey: String, val username: String, val password: String)
@@ -36,6 +61,7 @@ class SubtitleFetcher(private val context: Context) {
         val fileId: Long,
         val release: String,
         val info: String,
+        val uploader: String,
         val exactMatch: Boolean
     )
 
@@ -71,6 +97,8 @@ class SubtitleFetcher(private val context: Context) {
     /**
      * Full candidate list for the on-screen picker.
      * Like VLC: content-hash first (exact release match), title search fallback.
+     * Options from the uploader the user last picked for this show float to
+     * the top, so the next episode auto-selects the same submitter's timing.
      */
     fun searchOptions(videoUrl: String, titleHint: String): List<SubtitleOption> {
         val s = loadSettings()
@@ -96,7 +124,24 @@ class SubtitleFetcher(private val context: Context) {
             val url = "$BASE/subtitles?query=${URLEncoder.encode(cleaned.query, "UTF-8")}&languages=en"
             collectOptions(s, url, out, false)
         }
-        return out.take(15)
+        return preferRememberedUploader(out.take(15), titleHint)
+    }
+
+    /**
+     * Stable reorder: candidates uploaded by the submitter the user last
+     * chose for this show come first (original relative order kept).
+     * Only explicit user picks are remembered — auto-picks never overwrite.
+     */
+    private fun preferRememberedUploader(
+        options: List<SubtitleOption>,
+        titleHint: String
+    ): List<SubtitleOption> {
+        val remembered = rememberedUploader(context, seriesKeyFor(titleHint))
+        if (remembered.isNullOrBlank()) return options
+        val (mine, rest) = options.partition { it.uploader.equals(remembered, ignoreCase = true) }
+        if (mine.isEmpty()) return options
+        Log.i(TAG, "preferring remembered uploader '$remembered' for this show")
+        return mine + rest
     }
 
     /** Downloads one picked candidate to cache. */
@@ -142,7 +187,7 @@ class SubtitleFetcher(private val context: Context) {
                         uploader,
                         if (dlCount > 0) "$dlCount downloads" else ""
                     ).filter { it.isNotBlank() }.joinToString(" · ")
-                    out.add(SubtitleOption(fileId, release, info, exactMatch))
+                    out.add(SubtitleOption(fileId, release, info, uploader, exactMatch))
                 }
             }
         } catch (e: Exception) {

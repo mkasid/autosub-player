@@ -327,23 +327,18 @@ class PlayerActivity : Activity() {
         return "u:" + sb.toString()
     }
 
+    /**
+     * No resume dialog: while it sits open the stream idles on a short-lived
+     * Stalker token and dies with a 403. Always resume instead — the
+     * "Resumed from M:SS" toast confirms it; seek back manually to restart.
+     */
     private fun maybeResumeThenPlay() {
         val mark = resumeStore.load(resumeKey())
-        val offer = mark != null && mark.positionMs > 10_000 &&
-                (mark.durationMs <= 0 || mark.positionMs < mark.durationMs * 0.9)
-        val startPos = if (offer && mark != null) mark.positionMs else 0L
+        val startPos = if (mark != null && mark.positionMs > 10_000 &&
+                (mark.durationMs <= 0 || mark.positionMs < mark.durationMs * 0.9)) {
+            mark.positionMs
+        } else 0L
         startPlaybackImmediately(startPos)
-        if (offer && mark != null) {
-            AlertDialog.Builder(this)
-                .setTitle(streamTitle.ifBlank { "Resume?" })
-                .setMessage("Resumed from ${fmt(mark.positionMs)}. Start over instead?")
-                .setPositiveButton("Start over") { _, _ ->
-                    resumeStore.clear(resumeKey())
-                    player?.seekTo(0)
-                }
-                .setNegativeButton("Keep resume", null)
-                .show()
-        }
     }
 
     /** Starts the stream NOW — nothing may delay this on token-based servers. */
@@ -417,8 +412,15 @@ class PlayerActivity : Activity() {
                         .show()
                     return@post
                 }
+                val remembered = SubtitleFetcher.rememberedUploader(
+                    this@PlayerActivity, SubtitleFetcher.seriesKeyFor(streamTitle)
+                )
                 val labels = options.map {
-                    if (it.info.isNotBlank()) "${it.release}\n${it.info}" else it.release
+                    val star = if (!remembered.isNullOrBlank() &&
+                        it.uploader.equals(remembered, ignoreCase = true)
+                    ) "★ " else ""
+                    val base = if (it.info.isNotBlank()) "${it.release}\n${it.info}" else it.release
+                    star + base
                 }.toTypedArray()
                 AlertDialog.Builder(this@PlayerActivity)
                     .setTitle("Pick subtitles (${options.size} found)")
@@ -446,7 +448,22 @@ class PlayerActivity : Activity() {
                     srtCues = cues
                     // Explicit user choice beats the embedded track.
                     userPickedOnline = true
-                    Toast.makeText(this@PlayerActivity, "Subtitles loaded", Toast.LENGTH_SHORT).show()
+                    // Remember this submitter for the show: next episodes will
+                    // prefer their subtitles automatically (same timing).
+                    if (option.uploader.isNotBlank()) {
+                        SubtitleFetcher.rememberUploader(
+                            this@PlayerActivity,
+                            SubtitleFetcher.seriesKeyFor(streamTitle),
+                            option.uploader
+                        )
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "Subtitles loaded — will prefer ${option.uploader} for this show",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        Toast.makeText(this@PlayerActivity, "Subtitles loaded", Toast.LENGTH_SHORT).show()
+                    }
                 } else {
                     Toast.makeText(
                         this@PlayerActivity,
@@ -632,18 +649,33 @@ class PlayerActivity : Activity() {
         buttonMode = true
         buttonIndex = 0
         controllerButtons[buttonIndex].requestFocus()
+        updateButtonSelection()
         showController()
     }
 
     private fun exitButtonMode() {
         buttonMode = false
         currentFocus?.clearFocus()
+        updateButtonSelection()
     }
 
     private fun moveButtonFocus(dir: Int) {
         buttonIndex = (buttonIndex + dir + controllerButtons.size) % controllerButtons.size
         controllerButtons[buttonIndex].requestFocus()
+        updateButtonSelection()
         showController()
+    }
+
+    /**
+     * The orange highlight follows the D-pad scheme's logical focus
+     * (buttonMode + buttonIndex) via the "selected" drawable state — never
+     * the Android focus system, so a button can never look highlighted
+     * while focus is actually elsewhere (e.g. on the seek bar).
+     */
+    private fun updateButtonSelection() {
+        for (i in controllerButtons.indices) {
+            controllerButtons[i].isSelected = buttonMode && i == buttonIndex
+        }
     }
 
     private fun togglePlayPause() {
@@ -677,6 +709,7 @@ class PlayerActivity : Activity() {
         // seek), so always leave button mode when the controls go away.
         buttonMode = false
         currentFocus?.clearFocus()
+        updateButtonSelection()
         controller.visibility = View.GONE
         tvTitle.visibility = View.GONE
         setSubtitleMargin(64)
