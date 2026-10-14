@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.SurfaceView
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ProgressBar
@@ -180,6 +181,14 @@ class PlayerActivity : Activity() {
     }
 
     private val playerListener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            // Fire TV sleeps after ~10 min of "idle" — video playback counts
+            // as busy only if we say so. Flag follows actual playback: pausing
+            // lets the device sleep normally again.
+            if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+
         override fun onCues(cueGroup: CueGroup) {
             if (hasEmbeddedSubs && !userPickedOnline) {
                 tvSubtitle.text = cueGroup.cues
