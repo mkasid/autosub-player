@@ -15,6 +15,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ListView
+import android.widget.ArrayAdapter
 import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
@@ -51,9 +53,12 @@ class PlayerActivity : Activity() {
     private lateinit var tvTitle: TextView
     private lateinit var tvPosition: TextView
     private lateinit var tvDuration: TextView
-    private lateinit var tvPlayState: TextView
+    private lateinit var btnPlayPause: Button
     private lateinit var seekBar: SeekBar
     private lateinit var controller: View
+    private lateinit var buttonRow: View
+    private lateinit var subtitleDrawer: View
+    private lateinit var subtitleList: ListView
     private lateinit var loading: ProgressBar
     private lateinit var btnSubtitles: Button
     private lateinit var btnSyncMinus: Button
@@ -105,9 +110,12 @@ class PlayerActivity : Activity() {
             tvTitle = findViewById(R.id.tv_title)
             tvPosition = findViewById(R.id.tv_position)
             tvDuration = findViewById(R.id.tv_duration)
-            tvPlayState = findViewById(R.id.tv_play_state)
+            btnPlayPause = findViewById(R.id.btn_play_pause)
             seekBar = findViewById(R.id.seek_bar)
             controller = findViewById(R.id.controller)
+            buttonRow = findViewById(R.id.button_row)
+            subtitleDrawer = findViewById(R.id.subtitle_drawer)
+            subtitleList = findViewById(R.id.subtitle_list)
             loading = findViewById(R.id.loading)
             btnSubtitles = findViewById(R.id.btn_subtitles)
             btnSyncMinus = findViewById(R.id.btn_sync_minus)
@@ -129,10 +137,11 @@ class PlayerActivity : Activity() {
             intentInfo = buildIntentInfo(intent, uri)
             subDelayMs = loadSubDelay()
 
-            btnSubtitles.setOnClickListener { showSubtitlePicker() }
+            btnSubtitles.setOnClickListener { showSubtitleDrawer() }
             btnSyncMinus.setOnClickListener { adjustSync(-500) }
             btnSyncPlus.setOnClickListener { adjustSync(500) }
             btnVideoSize.setOnClickListener { cycleVideoSize() }
+            btnPlayPause.setOnClickListener { togglePlayPause() }
             // Always start at Fit (letterbox): aspect choice is per-session,
             // like VLC/MX — a persisted Zoom once left video cropped with no
             // obvious way back.
@@ -403,7 +412,10 @@ class PlayerActivity : Activity() {
     }
 
     /** Opens the online subtitle list; the user picks which file to use. */
-    private fun showSubtitlePicker() {
+    /** Item 3: subtitle picker as a right-side drawer. Selecting applies
+     *  immediately (so you can see which one works) and keeps the drawer
+     *  open; Back closes it. */
+    private fun showSubtitleDrawer() {
         val uri = streamUri ?: return
         Toast.makeText(this, "Searching subtitles...", Toast.LENGTH_SHORT).show()
         Thread {
@@ -414,11 +426,11 @@ class PlayerActivity : Activity() {
             }
             handler.post {
                 if (options.isEmpty()) {
-                    AlertDialog.Builder(this@PlayerActivity)
-                        .setTitle("Subtitles")
-                        .setMessage("No subtitles found online for this title.")
-                        .setPositiveButton("Close", null)
-                        .show()
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "No subtitles found online for this title.",
+                        Toast.LENGTH_LONG
+                    ).show()
                     return@post
                 }
                 val remembered = SubtitleFetcher.rememberedUploader(
@@ -428,19 +440,37 @@ class PlayerActivity : Activity() {
                     val star = if (!remembered.isNullOrBlank() &&
                         it.uploader.equals(remembered, ignoreCase = true)
                     ) "★ " else ""
-                    val base = if (it.info.isNotBlank()) "${it.release}\n${it.info}" else it.release
-                    star + base
-                }.toTypedArray()
-                AlertDialog.Builder(this@PlayerActivity)
-                    .setTitle("Pick subtitles (${options.size} found)")
-                    .setItems(labels) { _, which ->
-                        downloadPickedSubtitle(options[which])
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .setOnDismissListener { exitButtonMode() }
-                    .show()
+                    if (it.info.isNotBlank()) "$star${it.release} (${it.info})"
+                    else "$star${it.release}"
+                }
+                subtitleList.adapter = ArrayAdapter(
+                    this@PlayerActivity,
+                    android.R.layout.simple_list_item_1,
+                    labels
+                )
+                subtitleList.setOnItemClickListener { _, _, which, _ ->
+                    // Apply immediately, keep drawer open for preview.
+                    downloadPickedSubtitle(options[which])
+                }
+                subtitleDrawer.visibility = View.VISIBLE
+                subtitleList.requestFocus()
+                // Keep controls visible while the drawer is open.
+                handler.removeCallbacks(hideRunnable)
             }
         }.start()
+    }
+
+    private fun hideSubtitleDrawer() {
+        subtitleDrawer.visibility = View.GONE
+        // Return focus to the controller.
+        if (controller.visibility == View.VISIBLE) {
+            if (buttonMode && controllerButtons.isNotEmpty()) {
+                controllerButtons[buttonIndex].requestFocus()
+            } else {
+                btnPlayPause.requestFocus()
+            }
+            showController()
+        }
     }
 
     private fun downloadPickedSubtitle(option: SubtitleFetcher.SubtitleOption) {
@@ -586,6 +616,17 @@ class PlayerActivity : Activity() {
     // ---------- D-pad controls ----------
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        // Subtitle drawer open: Back closes it; Up/Down/OK navigate the list.
+        if (subtitleDrawer.visibility == View.VISIBLE) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_BACK -> {
+                    hideSubtitleDrawer()
+                    return true
+                }
+            }
+            // Let the ListView handle Up/Down/Center natively.
+            return super.onKeyDown(keyCode, event)
+        }
         // Button mode: D-pad drives the controller buttons explicitly.
         // Everywhere else, Left/Right always seek — the two can never fight.
         if (buttonMode) {
@@ -603,8 +644,8 @@ class PlayerActivity : Activity() {
                     currentFocus?.performClick()
                     return true
                 }
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-                KeyEvent.KEYCODE_BACK -> {
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_BACK -> {
+                    // Back to tier 1 (seek bar only); Back again hides all.
                     exitButtonMode()
                     return true
                 }
@@ -614,7 +655,13 @@ class PlayerActivity : Activity() {
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                togglePlayPause()
+                // Item 1: first press just shows the seek bar with focus on
+                // play/pause; a second press (on the focused button) toggles.
+                if (controller.visibility != View.VISIBLE) {
+                    showControllerTier1()
+                } else {
+                    togglePlayPause()
+                }
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
@@ -633,9 +680,16 @@ class PlayerActivity : Activity() {
                 seekBy(-30_000)
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                // Tier 1 showing: hide. Hidden: show tier 1.
+                if (controller.visibility == View.VISIBLE) hideController()
+                else showControllerTier1()
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                // Item 2: on the seek bar, Down reveals the other buttons.
                 if (controller.visibility == View.VISIBLE) enterButtonMode()
-                else showController()
+                else showControllerTier1()
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
@@ -657,15 +711,31 @@ class PlayerActivity : Activity() {
     private fun enterButtonMode() {
         buttonMode = true
         buttonIndex = 0
+        buttonRow.visibility = View.VISIBLE
         controllerButtons[buttonIndex].requestFocus()
         updateButtonSelection()
         showController()
     }
 
     private fun exitButtonMode() {
+        // Back to tier 1: seek bar stays, buttons hide, focus to play/pause.
         buttonMode = false
+        buttonRow.visibility = View.GONE
         currentFocus?.clearFocus()
         updateButtonSelection()
+        if (controller.visibility == View.VISIBLE) {
+            btnPlayPause.requestFocus()
+            showController()
+        }
+    }
+
+    /** Tier 1: seek bar only, focus on play/pause (item 1). */
+    private fun showControllerTier1() {
+        buttonMode = false
+        buttonRow.visibility = View.GONE
+        updateButtonSelection()
+        showController()
+        btnPlayPause.requestFocus()
     }
 
     private fun moveButtonFocus(dir: Int) {
@@ -717,6 +787,8 @@ class PlayerActivity : Activity() {
         // An invisible focused button would keep eating D-pad input (killing
         // seek), so always leave button mode when the controls go away.
         buttonMode = false
+        buttonRow.visibility = View.GONE
+        subtitleDrawer.visibility = View.GONE
         currentFocus?.clearFocus()
         updateButtonSelection()
         controller.visibility = View.GONE
@@ -744,7 +816,7 @@ class PlayerActivity : Activity() {
             tvDuration.text = "live"
             seekBar.max = 0
         }
-        tvPlayState.text = if (p.playWhenReady) "⏸" else "▶"
+        btnPlayPause.text = if (p.playWhenReady) "⏸" else "▶"
         // Online SRT renders here; embedded subs render via onCues instead.
         // subDelayMs > 0 means subtitles appear later (VLC convention).
         if (!hasEmbeddedSubs || userPickedOnline) {
