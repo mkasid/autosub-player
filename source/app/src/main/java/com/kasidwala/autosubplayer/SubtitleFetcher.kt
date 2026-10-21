@@ -145,11 +145,28 @@ class SubtitleFetcher(private val context: Context) {
     }
 
     /** Downloads one picked candidate to cache. */
+    /** Result of a subtitle download attempt, with the failure reason when it fails. */
+    sealed class DownloadResult {
+        data class Success(val file: File) : DownloadResult()
+        data class Failure(val reason: String) : DownloadResult()
+    }
+
     fun downloadOption(fileId: Long): File? {
+        return when (val r = downloadOptionDetailed(fileId)) {
+            is DownloadResult.Success -> r.file
+            is DownloadResult.Failure -> null
+        }
+    }
+
+    /** Same as downloadOption but reports why it failed. */
+    fun downloadOptionDetailed(fileId: Long): DownloadResult {
         val s = loadSettings()
-        if (s.apiKey.isBlank()) return null
-        val link = getDownloadLink(s, fileId) ?: return null
-        return downloadToCache(link)
+        if (s.apiKey.isBlank()) {
+            return DownloadResult.Failure("No OpenSubtitles API key set — add it in Settings")
+        }
+        val link = getDownloadLink(s, fileId)
+            ?: return DownloadResult.Failure("OpenSubtitles gave no download link (sign-in may have failed)")
+        return downloadToCacheDetailed(link)
     }
 
     private fun headers(s: Settings): Headers.Builder = Headers.Builder()
@@ -249,19 +266,31 @@ class SubtitleFetcher(private val context: Context) {
     }
 
     private fun downloadToCache(link: String): File? {
+        return when (val r = downloadToCacheDetailed(link)) {
+            is DownloadResult.Success -> r.file
+            is DownloadResult.Failure -> null
+        }
+    }
+
+    private fun downloadToCacheDetailed(link: String): DownloadResult {
         return try {
             val req = Request.Builder().url(link).header("User-Agent", UA).get().build()
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
+                if (!resp.isSuccessful) {
+                    return DownloadResult.Failure("Subtitle download failed (HTTP ${resp.code})")
+                }
                 val out = File(context.cacheDir, "autosub_${System.currentTimeMillis()}.srt")
                 resp.body?.byteStream()?.use { input ->
                     FileOutputStream(out).use { output -> input.copyTo(output) }
                 }
-                out
+                if (out.length() == 0L) {
+                    return DownloadResult.Failure("Downloaded file is empty (0 bytes)")
+                }
+                DownloadResult.Success(out)
             }
         } catch (e: Exception) {
             Log.w(TAG, "srt download failed: ${e.message}")
-            null
+            DownloadResult.Failure("Download failed: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

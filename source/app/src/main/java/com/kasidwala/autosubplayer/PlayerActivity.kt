@@ -476,11 +476,12 @@ class PlayerActivity : Activity() {
     private fun downloadPickedSubtitle(option: SubtitleFetcher.SubtitleOption) {
         Toast.makeText(this, "Downloading subtitles...", Toast.LENGTH_SHORT).show()
         Thread {
-            val srt = try {
-                SubtitleFetcher(this@PlayerActivity).downloadOption(option.fileId)
+            val result = try {
+                SubtitleFetcher(this@PlayerActivity).downloadOptionDetailed(option.fileId)
             } catch (t: Throwable) {
-                null
+                SubtitleFetcher.DownloadResult.Failure("Unexpected error: ${t.message ?: t.javaClass.simpleName}")
             }
+            val srt = (result as? SubtitleFetcher.DownloadResult.Success)?.file
             val cues = if (srt != null && srt.exists()) SrtParser.parse(srt) else emptyList()
             handler.post {
                 if (cues.isNotEmpty()) {
@@ -504,10 +505,17 @@ class PlayerActivity : Activity() {
                         Toast.makeText(this@PlayerActivity, "Subtitles loaded", Toast.LENGTH_SHORT).show()
                     }
                 } else {
+                    // Show the specific reason instead of a generic failure.
+                    val reason = when (result) {
+                        is SubtitleFetcher.DownloadResult.Failure -> result.reason
+                        is SubtitleFetcher.DownloadResult.Success ->
+                            "File downloaded but has no readable subtitle lines (not SRT?)"
+                        else -> "Unknown error"
+                    }
                     Toast.makeText(
                         this@PlayerActivity,
-                        "Couldn't load that subtitle file",
-                        Toast.LENGTH_SHORT
+                        "Couldn't load that subtitle: $reason",
+                        Toast.LENGTH_LONG
                     ).show()
                 }
             }
