@@ -8,7 +8,7 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 
-/** Launcher / settings screen: OpenSubtitles credentials + TiviMate how-to. */
+/** Launcher / settings screen: OpenSubtitles + SubSource credentials, TiviMate how-to. */
 class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,6 +20,7 @@ class MainActivity : Activity() {
         val etKey = findViewById<EditText>(R.id.et_api_key)
         val etUser = findViewById<EditText>(R.id.et_user)
         val etPass = findViewById<EditText>(R.id.et_pass)
+        val etSsKey = findViewById<EditText>(R.id.et_ss_key)
         val etUa = findViewById<EditText>(R.id.et_ua)
         val etReferer = findViewById<EditText>(R.id.et_referer)
         val tvStatus = findViewById<TextView>(R.id.tv_status)
@@ -27,6 +28,7 @@ class MainActivity : Activity() {
         etKey.setText(prefs.getString("api_key", ""))
         etUser.setText(prefs.getString("os_user", ""))
         etPass.setText(prefs.getString("os_pass", ""))
+        etSsKey.setText(prefs.getString("ss_key", ""))
         etUa.setText(prefs.getString("custom_ua", ""))
         etReferer.setText(prefs.getString("custom_referer", ""))
         if (!prefs.getString("api_key", "").isNullOrBlank()) {
@@ -39,6 +41,7 @@ class MainActivity : Activity() {
                     .putString("api_key", etKey.text.toString().trim())
                     .putString("os_user", etUser.text.toString().trim())
                     .putString("os_pass", etPass.text.toString())
+                    .putString("ss_key", etSsKey.text.toString().trim())
                     .putString("custom_ua", etUa.text.toString().trim())
                     .putString("custom_referer", etReferer.text.toString().trim())
                     .remove("os_token") // force re-login with new creds

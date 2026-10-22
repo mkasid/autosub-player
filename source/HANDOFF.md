@@ -3,8 +3,8 @@
 **Date:** 2026-10-12
 **App:** AutoSub Player — minimal Fire TV app, external player for TiviMate
 **Package:** `com.kasidwala.autosubplayer` · minSdk 21 (Fire OS 5+) · targetSdk 34
-**Current version:** v13, live at `https://go.kasidwala.com/aplayer13`
-**Status:** v13 delivered 2026-10-11, awaiting Mustufa's on-device test. The QA loop with him is: he installs on his Firestick, reports one-line issues, you ship a fix build. He is responsive and technical (20+ years software, Director-level).
+**Current version:** v19, live at `https://go.kasidwala.com/aplayer19`
+**Status:** v19 delivered 2026-10-21. The QA loop with him is: he installs on his Firestick, reports one-line issues, you ship a fix build. He is responsive and technical (20+ years software, Director-level).
 
 ## What it does
 
@@ -105,7 +105,16 @@ Build gotchas learned the hard way:
 - v10: hash-first matching (fixed misaligned subs) + embedded subs first
 - v11: FF/RW ±30s, visible button focus style, Video size button (Fit/Zoom/16:9/4:3)
 - v12: buttonMode D-pad rewrite, Back hides controls, subtitles to bottom
-- v13 (current): video size always starts at Fit, session-only (was: persisted Zoom trap)
+- v13: video size always starts at Fit, session-only (was: persisted Zoom trap)
+- v15: D-pad highlight via selected state, subtitle submitter memory per show, resume
+- v16: Fire TV sleep fix during playback
+- v17: controller UX rework — OK shows seekbar first, Down reveals buttons, subtitle drawer
+- v18: picker downloads show the specific failure reason instead of a generic error
+- v19: SubSource fallback source (api.subsource.net; free API key in Settings, pref `ss_key`).
+  Picker appends SubSource candidates ("via SubSource"); auto-fetch alternates sources
+  (OS pick, SS pick, ...) so a dead OpenSubtitles download endpoint (their /download
+  returned 503 on 2026-10-21 while search stayed up) no longer means no subtitles.
+  SubSource downloads arrive as ZIP — largest SRT wins, ASS is converted to SRT.
 
 ## What's pending
 

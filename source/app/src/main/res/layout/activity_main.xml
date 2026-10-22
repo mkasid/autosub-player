@@ -79,6 +79,23 @@
             android:layout_height="wrap_content"
             android:inputType="textPassword"
             android:singleLine="true"
+            android:layout_marginBottom="16dp"
+            android:nextFocusDown="@+id/et_ss_key" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_ss_key"
+            android:textSize="16sp"
+            android:layout_marginBottom="4dp" />
+
+        <EditText
+            android:id="@+id/et_ss_key"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="text"
+            android:singleLine="true"
+            android:hint="paste SubSource API key"
             android:layout_marginBottom="24dp"
             android:nextFocusDown="@+id/btn_save" />
 

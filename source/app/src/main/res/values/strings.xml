@@ -2,10 +2,11 @@
 <resources>
     <string name="app_name">AutoSub Player</string>
     <string name="help_title">How to use with TiviMate</string>
-    <string name="help_text">1. In TiviMate, go to Settings → Playback and set MX Player / external player, or long-press a channel or movie → \"Play with\" → choose AutoSub Player.\n\n2. When you play something, AutoSub Player searches OpenSubtitles for English subtitles automatically (by title first, then by file hash) and shows them.\n\n3. Basic controls: D-pad center = play/pause, left/right = seek. Your position is saved — reopen the same stream to resume.\n\n4. You need a free OpenSubtitles API key below (sign up at opensubtitles.com, then API section). Adding your username/password raises the daily download limit.</string>
+    <string name="help_text">1. In TiviMate, go to Settings → Playback and set MX Player / external player, or long-press a channel or movie → \"Play with\" → choose AutoSub Player.\n\n2. When you play something, AutoSub Player searches OpenSubtitles for English subtitles automatically (exact file hash first, then title) and shows them. If OpenSubtitles cannot deliver, it falls back to SubSource when that key is set below.\n\n3. Basic controls: D-pad center = play/pause, left/right = seek. Your position is saved — reopen the same stream to resume.\n\n4. You need a free OpenSubtitles API key below (sign up at opensubtitles.com, then API section). Adding your username/password raises the daily download limit. The SubSource key is an optional fallback (free at subsource.net, API section of your profile).</string>
     <string name="label_api_key">OpenSubtitles API key (required)</string>
     <string name="label_user">OpenSubtitles username (optional)</string>
     <string name="label_pass">OpenSubtitles password (optional)</string>
+    <string name="label_ss_key">SubSource API key (optional fallback)</string>
     <string name="save">Save</string>
     <string name="saved">Saved.</string>
 </resources>

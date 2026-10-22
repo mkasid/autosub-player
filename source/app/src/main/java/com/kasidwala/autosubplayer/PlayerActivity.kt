@@ -477,7 +477,7 @@ class PlayerActivity : Activity() {
         Toast.makeText(this, "Downloading subtitles...", Toast.LENGTH_SHORT).show()
         Thread {
             val result = try {
-                SubtitleFetcher(this@PlayerActivity).downloadOptionDetailed(option.fileId)
+                SubtitleFetcher(this@PlayerActivity).downloadOptionDetailed(option)
             } catch (t: Throwable) {
                 SubtitleFetcher.DownloadResult.Failure("Unexpected error: ${t.message ?: t.javaClass.simpleName}")
             }
