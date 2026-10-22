@@ -277,6 +277,10 @@ class SubtitleFetcher(private val context: Context) {
 
     /**
      * Searches SubSource by title text and appends up to 8 candidates.
+     * The search result is verified before use: only an entry whose title
+     * contains the full wanted title (and matching releaseYear, when the
+     * year is known) is accepted — SubSource's text search is fuzzy and
+     * happily returns a different, more popular show that shares a word.
      * TV titles (S01E02 / 1x02 in the cleaned query) are searched as a
      * series and filtered to the requested episode when possible.
      */
@@ -299,9 +303,19 @@ class SubtitleFetcher(private val context: Context) {
             }
             if (queryText.isBlank()) return
 
+            // Wanted title without the year (the year is checked separately
+            // against each result's releaseYear).
+            val wantTitle = if (cleaned.year != null) {
+                queryText.removeSuffix(cleaned.year).trim().ifBlank { queryText }
+            } else {
+                queryText
+            }
+            val wantNorm = normalizeTitle(wantTitle)
+            if (wantNorm.isBlank()) return
+
             val searchUrl = StringBuilder(
                 "$SS_BASE/movies/search?searchType=text&q=" +
-                    URLEncoder.encode(queryText, "UTF-8")
+                    URLEncoder.encode(wantTitle, "UTF-8")
             )
             if (isSeries) {
                 searchUrl.append("&type=series")
@@ -318,26 +332,33 @@ class SubtitleFetcher(private val context: Context) {
                 }
                 val data = JSONObject(resp.body?.string() ?: "").optJSONArray("data")
                     ?: return
-                if (data.length() == 0) return
-                // Prefer an entry whose year matches the cleaned title year.
-                var firstId = 0L
+                // Accept only an entry that IS the title we asked for: its
+                // title (or alternate title) must contain the full wanted
+                // title, and its releaseYear must match when we know the
+                // year. Anything else is a different show that merely
+                // shares a word ("Girls" vs "Shining Girls") — skip
+                // SubSource entirely rather than offer wrong subtitles.
                 var pickedId = 0L
                 for (i in 0 until data.length()) {
                     val m = data.getJSONObject(i)
                     val id = m.optLong("movieId", 0)
                     if (id == 0L) continue
-                    if (firstId == 0L) firstId = id
-                    val y = m.optInt("year", 0).toString()
-                    if (cleaned.year != null && y == cleaned.year) {
-                        pickedId = id
-                        break
-                    }
+                    if (!m.has("title") || !m.has("releaseYear")) continue
+                    val titleHit = listOf(
+                        m.optString("title", ""),
+                        m.optString("alternateTitle", "")
+                    ).any { it.isNotBlank() && normalizeTitle(it).contains(wantNorm) }
+                    if (!titleHit) continue
+                    if (cleaned.year != null &&
+                        m.optInt("releaseYear", 0).toString() != cleaned.year
+                    ) continue
+                    pickedId = id
+                    break
                 }
-                if (pickedId == 0L) pickedId = firstId
                 pickedId
             }
             if (movieId == 0L) {
-                Log.i(TAG, "SubSource: no title match for '$queryText'")
+                Log.i(TAG, "SubSource: no exact title match for '$wantTitle'")
                 return
             }
 
@@ -409,6 +430,10 @@ class SubtitleFetcher(private val context: Context) {
             Log.w(TAG, "SubSource search failed: ${e.message}")
         }
     }
+
+    /** Lowercase, punctuation-stripped title for containment checks. */
+    private fun normalizeTitle(t: String): String =
+        t.lowercase().replace(Regex("""[^a-z0-9]+"""), " ").trim()
 
     /** True when a release string names the given episode (S01E02, 1x02, Ep02...). */
     private fun ssEpisodeMatches(text: String, season: Int?, episode: Int): Boolean {

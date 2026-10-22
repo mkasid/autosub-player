@@ -3,8 +3,8 @@
 **Date:** 2026-10-12
 **App:** AutoSub Player — minimal Fire TV app, external player for TiviMate
 **Package:** `com.kasidwala.autosubplayer` · minSdk 21 (Fire OS 5+) · targetSdk 34
-**Current version:** v19, live at `https://go.kasidwala.com/aplayer19`
-**Status:** v19 delivered 2026-10-21. The QA loop with him is: he installs on his Firestick, reports one-line issues, you ship a fix build. He is responsive and technical (20+ years software, Director-level).
+**Current version:** v20, live at `https://go.kasidwala.com/aplayer20`
+**Status:** v20 delivered 2026-10-21. The QA loop with him is: he installs on his Firestick, reports one-line issues, you ship a fix build. He is responsive and technical (20+ years software, Director-level).
 
 ## What it does
 
@@ -115,6 +115,11 @@ Build gotchas learned the hard way:
   (OS pick, SS pick, ...) so a dead OpenSubtitles download endpoint (their /download
   returned 503 on 2026-10-21 while search stayed up) no longer means no subtitles.
   SubSource downloads arrive as ZIP — largest SRT wins, ASS is converted to SRT.
+- v20: SubSource title pick is verified (v19 took the first fuzzy search hit and
+  served "Girls" subtitles for "Shining Girls"). Now an entry is accepted only
+  if its title/alternateTitle contains the full wanted title and releaseYear
+  matches when known (fields per Bazarr's provider: title, alternateTitle,
+  releaseYear, movieId); no exact match = no SubSource candidates at all.
 
 ## What's pending
 
