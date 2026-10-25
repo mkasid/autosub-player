@@ -8,9 +8,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
+import android.graphics.Matrix
 import android.view.KeyEvent
-import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -27,17 +27,19 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import java.io.File
 
 /**
  * Minimal Fire TV player (no media3-ui — its resources don't survive the
- * manual build). SurfaceView + custom D-pad controller + subtitles rendered
+ * manual build). TextureView + custom D-pad controller + subtitles rendered
  * from Player.onCues into a TextView.
  *
  * Receives a stream URL via ACTION_VIEW (e.g. from TiviMate's external
@@ -48,7 +50,8 @@ import java.io.File
 class PlayerActivity : Activity() {
 
     private var player: ExoPlayer? = null
-    private lateinit var surfaceView: SurfaceView
+    private lateinit var surfaceView: TextureView
+    private var lastVideoSize: VideoSize? = null
     private lateinit var tvSubtitle: TextView
     private lateinit var tvTitle: TextView
     private lateinit var tvPosition: TextView
@@ -67,7 +70,7 @@ class PlayerActivity : Activity() {
     private lateinit var tvSync: TextView
     private lateinit var resumeStore: ResumeStore
 
-    private var videoSizeMode = 0 // 0=Fit, 1=Zoom, 2=16:9, 3=4:3
+    private var videoSizeMode = 0 // 0=Normal, 1=Fit, 2=Zoom, 3=Stretch
 
     private var streamUri: Uri? = null
     private var streamTitle: String = ""
@@ -142,9 +145,12 @@ class PlayerActivity : Activity() {
             btnSyncPlus.setOnClickListener { adjustSync(500) }
             btnVideoSize.setOnClickListener { cycleVideoSize() }
             btnPlayPause.setOnClickListener { togglePlayPause() }
-            // Always start at Fit (letterbox): aspect choice is per-session,
+            // Always start at Normal sizing: aspect choice is per-session,
             // like VLC/MX — a persisted Zoom once left video cropped with no
             // obvious way back.
+            surfaceView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                applyVideoSize()
+            }
 
             initPlayer()
             maybeResumeThenPlay()
@@ -190,6 +196,22 @@ class PlayerActivity : Activity() {
     }
 
     private val playerListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            // Show the spinner whenever the player is waiting on the
+            // network — without this a mid-stream stall looks like a
+            // frozen picture with no explanation.
+            loading.visibility =
+                if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+        }
+
+        override fun onVideoSizeChanged(videoSize: VideoSize) {
+            lastVideoSize = videoSize
+            surfaceView.surfaceTexture?.setDefaultBufferSize(
+                videoSize.width.coerceAtLeast(1), videoSize.height.coerceAtLeast(1)
+            )
+            handler.post { applyVideoSize() }
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             // Fire TV sleeps after ~10 min of "idle" — video playback counts
             // as busy only if we say so. Flag follows actual playback: pausing
@@ -296,12 +318,27 @@ class PlayerActivity : Activity() {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(ua)
             .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(15_000)
+            // Slow IPTV servers can stall mid-segment; a 15s read timeout
+            // turned those stalls into hard errors. 30s rides them out.
+            .setReadTimeoutMs(30_000)
             .setAllowCrossProtocolRedirects(true)
         customReferer()?.let {
             httpFactory.setDefaultRequestProperties(mapOf("Referer" to it))
         }
+        // Buffering tuned for slow connections (the stock control keeps
+        // only a shallow cushion, so a slow stream plays, stalls, plays,
+        // stalls): keep ~45s ready at all times, up to 2 minutes when the
+        // network allows, and after a stall wait for ~8s of cushion
+        // before resuming instead of 5. Playback still starts on the
+        // first ~2.5s, so the first request is not delayed.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(45_000, 120_000, 2_500, 8_000)
+            .setTargetBufferBytes(C.LENGTH_UNSET)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBackBuffer(30_000, false)
+            .build()
         return ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
             .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
             .build()
     }
@@ -309,9 +346,12 @@ class PlayerActivity : Activity() {
     private fun attachPlayer(p: ExoPlayer) {
         player?.release()
         player = p
-        p.setVideoSurfaceView(surfaceView)
-        // Letterbox by default — never stretch.
-        p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        // TextureView: picture sizing is done with our own transform
+        // (see applyVideoSize) — ExoPlayer's surface sizing trusts the
+        // aspect ratio flagged in the stream, which many IPTV streams
+        // get wrong, and the result was black stripes on pictures that
+        // fill the screen in TiviMate.
+        p.setVideoTextureView(surfaceView)
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .setPreferredTextLanguage("en")
             .build()
@@ -373,7 +413,9 @@ class PlayerActivity : Activity() {
                 Toast.makeText(this, "Resumed from ${fmt(positionMs)}", Toast.LENGTH_SHORT).show()
             }
             p.playWhenReady = true
-            loading.visibility = View.GONE
+            // The spinner is state-driven now (onPlaybackStateChanged):
+            // it stays up until the first frames are ready and comes
+            // back whenever the stream stalls.
             tvTitle.visibility = View.VISIBLE
             handler.postDelayed({ tvTitle.visibility = View.GONE }, 4000)
             handler.post(uiRunnable)
@@ -396,8 +438,9 @@ class PlayerActivity : Activity() {
     private fun fetchSubtitlesAsync() {
         val uri = streamUri ?: return
         Thread {
+            val fetcher = SubtitleFetcher(this@PlayerActivity)
             val srt: File? = try {
-                SubtitleFetcher(this@PlayerActivity).fetch(uri.toString(), streamTitle)
+                fetcher.fetch(uri.toString(), streamTitle)
             } catch (t: Throwable) {
                 null
             }
@@ -406,6 +449,15 @@ class PlayerActivity : Activity() {
                 srtCues = cues
                 if (cues.isNotEmpty()) {
                     Toast.makeText(this@PlayerActivity, "Subtitles loaded", Toast.LENGTH_SHORT).show()
+                } else if (fetcher.lastFailureReason != null) {
+                    // Candidates existed but every download was refused —
+                    // say why (quota, stale login, outage) instead of
+                    // leaving the user with a silent no-show.
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        fetcher.lastFailureReason,
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }.start()
@@ -561,64 +613,63 @@ class PlayerActivity : Activity() {
 
     // ---------- Video size ----------
 
-    private val videoSizeLabels = arrayOf("Fit", "Zoom", "16:9", "4:3")
+    private val videoSizeLabels = arrayOf("Normal", "Fit", "Zoom", "Stretch")
 
     private fun cycleVideoSize() {
         videoSizeMode = (videoSizeMode + 1) % videoSizeLabels.size
         applyVideoSize()
         val desc = when (videoSizeMode) {
-            0 -> "Fit: whole picture, black bars if needed"
-            1 -> "Zoom: fills the screen, crops the edges"
-            2 -> "Forced 16:9"
-            else -> "Forced 4:3"
+            0 -> "Normal: sized by the picture itself, like TiviMate"
+            1 -> "Fit: whole picture, uses the stream's flagged size (bars if flagged wide)"
+            2 -> "Zoom: fills the screen, crops the edges"
+            else -> "Stretch: fills the screen, may distort"
         }
         Toast.makeText(this, desc, Toast.LENGTH_SHORT).show()
         showController()
     }
 
+    /**
+     * Sizes the picture with a TextureView transform we control.
+     *
+     * Why: many IPTV streams carry a wrong aspect-ratio flag (e.g. a
+     * 16:9 picture flagged as widescreen-cinema). Players that trust the
+     * flag (our old Fit-only build) letterbox a picture that should fill
+     * the screen — the black stripes at top and bottom. TiviMate's
+     * "Normal" sizing presents these streams full-screen.
+     *
+     * - Normal: fit using the picture's actual frame (ignores the flag).
+     *   A genuinely wider-than-TV movie still gets bars — its frame
+     *   really is wider than the screen.
+     * - Fit: fit using the flagged display aspect (the old behaviour).
+     * - Zoom: fill the screen, cropping whatever overflows.
+     * - Stretch: fill the screen exactly, aspect be damned.
+     */
     private fun applyVideoSize() {
-        val p = player ?: return
         btnVideoSize.text = "Video: ${videoSizeLabels[videoSizeMode]}"
+        val vs = lastVideoSize ?: return
+        val vw = surfaceView.width
+        val vh = surfaceView.height
+        if (vw == 0 || vh == 0 || vs.width == 0 || vs.height == 0) return
+        // Normal ignores the flagged pixel aspect; the other modes use it.
+        val par = if (videoSizeMode == 0) 1f
+        else vs.pixelWidthHeightRatio.takeIf { it > 0f } ?: 1f
+        val targetAspect = (vs.width * par) / vs.height
+        val viewAspect = vw.toFloat() / vh
+        val cx = vw / 2f
+        val cy = vh / 2f
+        val m = Matrix()
         when (videoSizeMode) {
-            0 -> {
-                p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                setSurfaceAspect(0f)
+            3 -> Unit // Stretch: identity transform, buffer fills the view
+            2 -> { // Zoom: cover the view, aspect preserved, overflow cropped
+                if (targetAspect > viewAspect) m.setScale(targetAspect / viewAspect, 1f, cx, cy)
+                else m.setScale(1f, viewAspect / targetAspect, cx, cy)
             }
-            1 -> {
-                p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
-                setSurfaceAspect(0f)
-            }
-            2 -> {
-                p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                setSurfaceAspect(16f / 9f)
-            }
-            3 -> {
-                p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                setSurfaceAspect(4f / 3f)
+            else -> { // Normal / Fit: fit inside the view, aspect preserved
+                if (targetAspect > viewAspect) m.setScale(1f, viewAspect / targetAspect, cx, cy)
+                else m.setScale(targetAspect / viewAspect, 1f, cx, cy)
             }
         }
-    }
-
-    /** Forces the surface to an aspect ratio (0 = free, letterboxed by the player). */
-    private fun setSurfaceAspect(ratio: Float) {
-        val params = surfaceView.layoutParams as FrameLayout.LayoutParams
-        if (ratio <= 0f) {
-            params.width = FrameLayout.LayoutParams.MATCH_PARENT
-            params.height = FrameLayout.LayoutParams.MATCH_PARENT
-        } else {
-            val dm = resources.displayMetrics
-            val w = dm.widthPixels
-            val h = dm.heightPixels
-            if (w.toFloat() / h > ratio) {
-                params.height = h
-                params.width = (h * ratio).toInt()
-            } else {
-                params.width = w
-                params.height = (w / ratio).toInt()
-            }
-        }
-        params.gravity = Gravity.CENTER
-        surfaceView.layoutParams = params
+        surfaceView.setTransform(m)
     }
 
     // ---------- D-pad controls ----------

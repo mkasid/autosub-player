@@ -3,8 +3,8 @@
 **Date:** 2026-10-12
 **App:** AutoSub Player — minimal Fire TV app, external player for TiviMate
 **Package:** `com.kasidwala.autosubplayer` · minSdk 21 (Fire OS 5+) · targetSdk 34
-**Current version:** v20, live at `https://go.kasidwala.com/aplayer20`
-**Status:** v20 delivered 2026-10-21. The QA loop with him is: he installs on his Firestick, reports one-line issues, you ship a fix build. He is responsive and technical (20+ years software, Director-level).
+**Current version:** v21, live at `https://go.kasidwala.com/aplayer21`
+**Status:** v21 delivered 2026-10-25. The QA loop with him is: he installs on his Firestick, reports one-line issues, you ship a fix build. He is responsive and technical (20+ years software, Director-level).
 
 ## What it does
 
@@ -69,9 +69,12 @@ Build gotchas learned the hard way:
    upload for a different cut and the subs didn't line up.
 4. **Embedded subtitles first**: if the stream has a usable embedded text track (English preferred),
    use it and skip the online search. An explicit picker choice overrides embedded.
-5. **Video size is session-only and always starts at Fit** (black bars top/bottom, height reduced).
-   The Video button cycles Fit/Zoom/16:9/4:3 per video but resets next launch. (Persisting the
-   choice once trapped Mustufa in Zoom with no visible way out.)
+5. **Video size is session-only and always starts at Normal** (v21; was Fit through v20).
+   The Video button cycles Normal/Fit/Zoom/Stretch per video but resets next launch. (Persisting
+   the choice once trapped Mustufa in Zoom with no visible way out.) Sizing is a TextureView
+   transform owned by the app: Normal fits by the picture's actual frame (ignores the stream's
+   aspect flag — many IPTV streams flag it wrong, which caused the black-stripes complaint),
+   Fit fits by the flagged display aspect, Zoom fills+crops, Stretch fills exactly.
 6. **D-pad scheme** (explicit `buttonMode` flag — focus-based handling was unreliable):
    Center = play/pause · Left/Right = ∓10s seek · FF/RW buttons = ±30s ·
    Up/Down with controls hidden = show controls · Up/Down with controls visible = enter button mode
@@ -120,6 +123,16 @@ Build gotchas learned the hard way:
   if its title/alternateTitle contains the full wanted title and releaseYear
   matches when known (fields per Bazarr's provider: title, alternateTitle,
   releaseYear, movieId); no exact match = no SubSource candidates at all.
+- v21 (2026-10-25, his three reports): (1) subtitle downloads failed with "OpenSubtitles
+  gave no download link" — the stored login token is now refreshed on a 401 (clear,
+  re-login, retry once), the server's own error message is surfaced in the picker and
+  in a toast when auto-fetch fails, and SubSource now sends the key as an `api_key`
+  query parameter like Bazarr does (the app previously sent only an X-API-Key header);
+  episode lookups also pass seasonNumber/episodeNumber. (2) Buffering: custom
+  DefaultLoadControl (45s min / 120s max / 2.5s start / 8s after rebuffer, 30s back
+  buffer), HTTP read timeout 15s→30s, and the spinner now shows on STATE_BUFFERING
+  instead of a silent frozen frame. (3) Black stripes: SurfaceView replaced by
+  TextureView with app-owned sizing; new default "Normal" mode (see rule 5).
 
 ## What's pending
 

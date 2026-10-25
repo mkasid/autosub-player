@@ -106,12 +106,21 @@ class SubtitleFetcher(private val context: Context) {
     }
 
     /**
+     * Why the last [fetch] failed even though candidates existed (quota,
+     * auth, server error) — null when nothing was found at all. Lets the UI
+     * tell the user the real reason instead of a bare "no subtitles".
+     */
+    @Volatile
+    var lastFailureReason: String? = null
+
+    /**
      * Returns a local .srt File (best match), or null when nothing found /
      * not configured. Attempts alternate between sources — OpenSubtitles
      * first pick, SubSource first pick, then seconds — so a dead download
      * endpoint on one source cannot block the other.
      */
     fun fetch(videoUrl: String, titleHint: String): File? {
+        lastFailureReason = null
         val options = searchOptions(videoUrl, titleHint)
         val os = options.filter { it.source == SOURCE_OS }
         val ss = options.filter { it.source == SOURCE_SS }
@@ -120,10 +129,18 @@ class SubtitleFetcher(private val context: Context) {
             if (i < os.size) attemptOrder.add(os[i])
             if (i < ss.size) attemptOrder.add(ss[i])
         }
+        var lastReason: String? = null
         for (opt in attemptOrder.take(6)) {
-            val f = downloadOption(opt)
-            if (f != null) return f
-            Log.i(TAG, "auto-download failed for '${opt.release}' (${opt.source}), trying next")
+            when (val r = downloadOptionDetailed(opt)) {
+                is DownloadResult.Success -> return r.file
+                is DownloadResult.Failure -> {
+                    lastReason = r.reason
+                    Log.i(TAG, "auto-download failed for '${opt.release}' (${opt.source}): ${r.reason}")
+                }
+            }
+        }
+        if (attemptOrder.isNotEmpty()) {
+            lastFailureReason = "Subtitles were found but the download failed: $lastReason"
         }
         return null
     }
@@ -211,8 +228,10 @@ class SubtitleFetcher(private val context: Context) {
         if (s.apiKey.isBlank()) {
             return DownloadResult.Failure("No OpenSubtitles API key set — add it in Settings")
         }
-        val link = getDownloadLink(s, fileId)
-            ?: return DownloadResult.Failure("OpenSubtitles gave no download link (sign-in may have failed)")
+        val (link, error) = getDownloadLink(s, fileId)
+        if (link == null) {
+            return DownloadResult.Failure(error ?: "OpenSubtitles gave no download link")
+        }
         return downloadToCacheDetailed(link)
     }
 
@@ -313,8 +332,12 @@ class SubtitleFetcher(private val context: Context) {
             val wantNorm = normalizeTitle(wantTitle)
             if (wantNorm.isBlank()) return
 
+            // Bazarr (the reference SubSource client) passes the key as an
+            // api_key query parameter on every call — do the same, and keep
+            // the X-API-Key header as well; either alone may be ignored.
+            val ssKeyParam = URLEncoder.encode(s.subSourceKey, "UTF-8")
             val searchUrl = StringBuilder(
-                "$SS_BASE/movies/search?searchType=text&q=" +
+                "$SS_BASE/movies/search?searchType=text&api_key=$ssKeyParam&q=" +
                     URLEncoder.encode(wantTitle, "UTF-8")
             )
             if (isSeries) {
@@ -362,8 +385,14 @@ class SubtitleFetcher(private val context: Context) {
                 return
             }
 
-            val subsUrl = "$SS_BASE/subtitles?movieId=$movieId&language=english&page=1&limit=30"
-            val subsReq = Request.Builder().url(subsUrl)
+            val subsUrl = StringBuilder(
+                "$SS_BASE/subtitles?movieId=$movieId&language=english&page=1&limit=30" +
+                    "&api_key=$ssKeyParam"
+            )
+            if (isSeries && season != null && episode != null) {
+                subsUrl.append("&seasonNumber=$season&episodeNumber=$episode")
+            }
+            val subsReq = Request.Builder().url(subsUrl.toString())
                 .headers(ssHeaders(s).build()).get().build()
             client.newCall(subsReq).execute().use { resp ->
                 if (!resp.isSuccessful) {
@@ -456,7 +485,8 @@ class SubtitleFetcher(private val context: Context) {
         if (s.subSourceKey.isBlank()) {
             return DownloadResult.Failure("No SubSource API key set — add it in Settings")
         }
-        val url = "$SS_BASE/subtitles/$subtitleId/download"
+        val url = "$SS_BASE/subtitles/$subtitleId/download?api_key=" +
+            URLEncoder.encode(s.subSourceKey, "UTF-8")
         val req = Request.Builder().url(url).headers(ssHeaders(s).build()).get().build()
         return try {
             client.newCall(req).execute().use { resp ->
@@ -637,9 +667,17 @@ class SubtitleFetcher(private val context: Context) {
         }
     }
 
-    private fun getDownloadLink(s: Settings, fileId: Long): String? {
-        var token = storedToken()
-        if (token == null && s.username.isNotBlank()) token = login(s)
+    private fun clearToken() {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().remove("os_token").apply()
+    }
+
+    /** One POST /download attempt: (link, httpCode, serverMessage). */
+    private fun requestDownloadLink(
+        s: Settings,
+        fileId: Long,
+        token: String?
+    ): Triple<String?, Int, String> {
         return try {
             val json = JSONObject().put("file_id", fileId).toString()
             val hb = headers(s).add("Content-Type", "application/json")
@@ -649,17 +687,65 @@ class SubtitleFetcher(private val context: Context) {
                 .post(json.toRequestBody("application/json".toMediaType()))
                 .build()
             client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: ""
                 if (!resp.isSuccessful) {
-                    Log.w(TAG, "download-link HTTP ${resp.code}")
-                    return null
+                    val msg = try {
+                        JSONObject(body).optString("message", "")
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    Log.w(TAG, "download-link HTTP ${resp.code}: $msg")
+                    Triple(null, resp.code, msg)
+                } else {
+                    val obj = JSONObject(body)
+                    val link = obj.optString("link", "").ifBlank { null }
+                    if (link != null) {
+                        Log.i(TAG, "download link ok, remaining today: ${obj.optString("remaining", "?")}")
+                    }
+                    Triple(link, resp.code, "")
                 }
-                JSONObject(resp.body?.string() ?: "")
-                    .optString("link", "").ifBlank { null }
             }
         } catch (e: Exception) {
             Log.w(TAG, "download-link failed: ${e.message}")
-            null
+            Triple(null, -1, e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    /**
+     * Gets a download link, or (null, reason). OpenSubtitles allows only
+     * ~5 downloads/day with an API key alone and ~20/day logged in, and a
+     * stored login token goes stale — on a 401 the stale token is dropped,
+     * a fresh login is attempted, and the request retried once. The
+     * server's own message is surfaced so a refusal says why (quota,
+     * auth, outage) instead of failing silently.
+     */
+    private fun getDownloadLink(s: Settings, fileId: Long): Pair<String?, String?> {
+        var token = storedToken()
+        if (token == null && s.username.isNotBlank()) token = login(s)
+        var (link, code, msg) = requestDownloadLink(s, fileId, token)
+        if (link == null && code == 401) {
+            // Stale/expired token (or no token and credentials exist):
+            // clear, log in fresh, retry exactly once.
+            clearToken()
+            val fresh = if (s.username.isNotBlank()) login(s) else null
+            if (fresh != null) {
+                val retry = requestDownloadLink(s, fileId, fresh)
+                link = retry.first
+                code = retry.second
+                msg = retry.third
+            }
+        }
+        if (link != null) return link to null
+        val reason = buildString {
+            append("OpenSubtitles refused the download")
+            if (code > 0) append(" (HTTP $code)")
+            if (msg.isNotBlank()) append(": $msg")
+            if (code == 401 && s.username.isBlank()) {
+                append(" — add your OpenSubtitles username and password in the app's Settings: " +
+                    "downloads are capped at 5/day without a login, 20/day with one")
+            }
+        }
+        return null to reason
     }
 
     private fun downloadToCache(link: String): File? {
@@ -671,8 +757,22 @@ class SubtitleFetcher(private val context: Context) {
 
     private fun downloadToCacheDetailed(link: String): DownloadResult {
         return try {
-            val req = Request.Builder().url(link).header("User-Agent", UA).get().build()
-            client.newCall(req).execute().use { resp ->
+            var req = Request.Builder().url(link).header("User-Agent", UA).get().build()
+            var resp = client.newCall(req).execute()
+            if (resp.code == 403) {
+                // The download host sometimes refuses non-browser agents;
+                // retry the same link once identifying as a browser.
+                resp.close()
+                req = Request.Builder().url(link)
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                    )
+                    .get().build()
+                resp = client.newCall(req).execute()
+            }
+            resp.use {
                 if (!resp.isSuccessful) {
                     return DownloadResult.Failure("Subtitle download failed (HTTP ${resp.code})")
                 }
